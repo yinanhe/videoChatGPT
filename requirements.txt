@@ -3,7 +3,7 @@ einops
 gradio
 imageio
 decord
-simplet5
+simplet5==4.15.0
 imageio-ffmpeg
 Pillow
 scipy
@@ -23,7 +23,7 @@ accelerate
 bitsandbytes
 langchain==0.0.101
 timm==0.4.12
-transformers==4.28.0
+transformers==4.16.2
 fairscale==0.4.4
 pycocoevalcap
 torch==1.13.1
