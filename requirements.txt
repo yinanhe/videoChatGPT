@@ -3,7 +3,7 @@ einops
 gradio
 imageio
 decord
-simplet5==4.15.0
+simplet5==0.1.4
 imageio-ffmpeg
 Pillow
 scipy
