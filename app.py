@@ -1,4 +1,5 @@
 import os
+os.system('pip install en_core_web_sm-3.0.0.tar.gz')
 os.system('python -m pip install -e detectron2')
 import numpy as np
 import random
