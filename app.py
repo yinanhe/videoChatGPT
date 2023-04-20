@@ -1,4 +1,5 @@
 import os
+os.system('python -m pip install -e detectron2')
 import numpy as np
 import random
 import torch

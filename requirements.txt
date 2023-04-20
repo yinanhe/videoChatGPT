@@ -30,4 +30,3 @@ torchvision==0.14.1
 wget
 setuptools
 en_core_web_sm-3.0.0.tar.gz
--e detectron2/
