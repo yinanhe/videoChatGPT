@@ -1,173 +1,203 @@
-import os
-os.system('pip install en_core_web_sm-3.0.0.tar.gz')
-os.system('python -m pip install -e detectron2_setup/')
-import numpy as np
-import random
 import torch
-import torchvision.transforms as transforms
-from PIL import Image
-from models.tag2text import tag2text_caption
-from util import *
 import gradio as gr
-from chatbot import *
-from load_internvideo import *
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-from simplet5 import SimpleT5
-from models.grit_model import DenseCaptioning
-bot = ConversationBot()
-image_size = 384
-normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                std=[0.229, 0.224, 0.225])
-transform = transforms.Compose([transforms.ToPILImage(),transforms.Resize((image_size, image_size)),transforms.ToTensor(),normalize])
+from gradio.themes.utils import colors, fonts, sizes
+
+from conversation import Chat
+
+# videochat
+from utils.config import Config
+from utils.easydict import EasyDict
+from models.videochat import VideoChat
 
 
-# define model
-model = tag2text_caption(pretrained="pretrained_models/tag2text_swin_14m.pth", image_size=image_size, vit='swin_b' )
-model.eval()
-model = model.to(device)
-print("[INFO] initialize caption model success!")
-
-model_T5 = SimpleT5()
-if torch.cuda.is_available():
-    model_T5.load_model(
-        "t5", "./pretrained_models/flan-t5-large-finetuned-openai-summarize_from_feedback", use_gpu=True)
-else:
-    model_T5.load_model(
-        "t5", "./pretrained_models/flan-t5-large-finetuned-openai-summarize_from_feedback", use_gpu=False)
-print("[INFO] initialize summarize model success!")
-# action recognition
-intern_action = load_intern_action(device)
-trans_action = transform_action()
-topil =  T.ToPILImage()
-print("[INFO] initialize InternVideo model success!")
-
-dense_caption_model = DenseCaptioning(device)
-dense_caption_model.initialize_model()
-print("[INFO] initialize dense caption model success!")
-
-def inference(video_path, input_tag, progress=gr.Progress()):
-    data = loadvideo_decord_origin(video_path)
-    progress(0.2, desc="Loading Videos")
-
-    # InternVideo
-    action_index = np.linspace(0, len(data)-1, 8).astype(int)
-    tmp,tmpa = [],[]
-    for i,img in enumerate(data):
-        tmp.append(transform(img).to(device).unsqueeze(0))
-        if i in action_index:
-            tmpa.append(topil(img))
-    action_tensor = trans_action(tmpa)
-    TC, H, W = action_tensor.shape
-    action_tensor = action_tensor.reshape(1, TC//3, 3, H, W).permute(0, 2, 1, 3, 4).to(device)
-    with torch.no_grad():
-        prediction = intern_action(action_tensor)
-        prediction = F.softmax(prediction, dim=1).flatten()
-        prediction = kinetics_classnames[str(int(prediction.argmax()))]
-
-    # dense caption
-    dense_caption = []
-    dense_index = np.arange(0, len(data)-1, 5)
-    original_images = data[dense_index,:,:,::-1]
-    with torch.no_grad():
-        for original_image in original_images:
-            dense_caption.append(dense_caption_model.run_caption_tensor(original_image))
-        dense_caption = ' '.join([f"Second {i+1} : {j}.\n" for i,j in zip(dense_index,dense_caption)])
-    
-    # Video Caption
-    image = torch.cat(tmp).to(device)   
-    
-    model.threshold = 0.68
-    if input_tag == '' or input_tag == 'none' or input_tag == 'None':
-        input_tag_list = None
-    else:
-        input_tag_list = []
-        input_tag_list.append(input_tag.replace(',',' | '))
-    with torch.no_grad():
-        caption, tag_predict = model.generate(image,tag_input = input_tag_list,max_length = 50, return_tag_predict = True)
-        progress(0.6, desc="Watching Videos")
-        frame_caption = ' '.join([f"Second {i+1}:{j}.\n" for i,j in enumerate(caption)])
-        if input_tag_list == None:
-            tag_1 = set(tag_predict)
-            tag_2 = ['none']
-        else:
-            _, tag_1 = model.generate(image,tag_input = None, max_length = 50, return_tag_predict = True)
-            tag_2 = set(tag_predict)
-        progress(0.8, desc="Understanding Videos")
-        synth_caption = model_T5.predict('. '.join(caption))
-    print(frame_caption, dense_caption, synth_caption)
-
-    del data, action_tensor, original_image, image,tmp,tmpa
-    torch.cuda.empty_cache()
-    torch.cuda.ipc_collect()
-    return ' | '.join(tag_1),' | '.join(tag_2), frame_caption, dense_caption, synth_caption[0], gr.update(interactive = True), prediction
-
-def set_example_video(example: list) -> dict:
-    return gr.Video.update(value=example[0])
+# ========================================
+#             Model Initialization
+# ========================================
+def init_model():
+    print('Initializing VideoChat')
+    config_file = "configs/config.json"
+    cfg = Config.from_file(config_file)
+    model = VideoChat(config=cfg.model)
+    model = model.to(torch.device(cfg.device))
+    model = model.eval()
+    chat = Chat(model)
+    print('Initialization Finished')
+    return chat
 
 
-with gr.Blocks(css="#chatbot {overflow:auto; height:500px;}") as demo:
-    gr.Markdown("<h1><center>Ask Anything with GPT</center></h1>")
-    gr.Markdown(
+# ========================================
+#             Gradio Setting
+# ========================================
+def gradio_reset(chat_state, img_list):
+    if chat_state is not None:
+        chat_state.messages = []
+    if img_list is not None:
+        img_list = []
+    return None, gr.update(value=None, interactive=True), gr.update(value=None, interactive=True), gr.update(placeholder='Please upload your video first', interactive=False),gr.update(value="Upload & Start Chat", interactive=True), chat_state, img_list
+
+
+def upload_img(gr_img, gr_video, chat_state, num_segments):
+    # print(gr_img, gr_video)
+    chat_state = EasyDict({
+        "system": "",
+        "roles": ("Human", "Assistant"),
+        "messages": [],
+        "sep": "###"
+    })
+    img_list = []
+    if gr_img is None and gr_video is None:
+        return None, None, gr.update(interactive=True), chat_state, None
+    if gr_video: 
+        llm_message, img_list, chat_state = chat.upload_video(gr_video, chat_state, img_list, num_segments)
+        return gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=True, placeholder='Type and press Enter'), gr.update(value="Start Chatting", interactive=False), chat_state, img_list
+    if gr_img:
+        llm_message, img_list,chat_state = chat.upload_img(gr_img, chat_state, img_list)
+        return gr.update(interactive=True), gr.update(interactive=True), gr.update(interactive=True, placeholder='Type and press Enter'), gr.update(value="Start Chatting", interactive=False), chat_state, img_list
+
+
+def gradio_ask(user_message, chatbot, chat_state):
+    if len(user_message) == 0:
+        return gr.update(interactive=True, placeholder='Input should not be empty!'), chatbot, chat_state
+    #print(chat_state)
+    chat_state =  chat.ask(user_message, chat_state)
+    chatbot = chatbot + [[user_message, None]]
+    return '', chatbot, chat_state
+
+
+def gradio_answer(gr_img, gr_video,chatbot, chat_state, img_list, num_beams, temperature):
+    llm_message,llm_message_token, chat_state = chat.answer(conv=chat_state, img_list=img_list, max_new_tokens=1000, num_beams=num_beams, temperature=temperature)
+    llm_message = llm_message.replace("<s>", "") # handle <s>
+    chatbot[-1][1] = llm_message
+    print(f"========{gr_img}##<BOS>##{gr_video}========")
+    print(chat_state,flush=True)
+    print(f"========{gr_img}##<END>##{gr_video}========")
+    # print(f"Answer: {llm_message}")
+    return chatbot, chat_state, img_list
+
+
+class OpenGVLab(gr.themes.base.Base):
+    def __init__(
+        self,
+        *,
+        primary_hue=colors.blue,
+        secondary_hue=colors.sky,
+        neutral_hue=colors.gray,
+        spacing_size=sizes.spacing_md,
+        radius_size=sizes.radius_sm,
+        text_size=sizes.text_md,
+        font=(
+            fonts.GoogleFont("Noto Sans"),
+            "ui-sans-serif",
+            "sans-serif",
+        ),
+        font_mono=(
+            fonts.GoogleFont("IBM Plex Mono"),
+            "ui-monospace",
+            "monospace",
+        ),
+    ):
+        super().__init__(
+            primary_hue=primary_hue,
+            secondary_hue=secondary_hue,
+            neutral_hue=neutral_hue,
+            spacing_size=spacing_size,
+            radius_size=radius_size,
+            text_size=text_size,
+            font=font,
+            font_mono=font_mono,
+        )
+        super().set(
+            body_background_fill="*neutral_50",
+        )
+
+
+gvlabtheme = OpenGVLab(primary_hue=colors.blue,
+        secondary_hue=colors.sky,
+        neutral_hue=colors.gray,
+        spacing_size=sizes.spacing_md,
+        radius_size=sizes.radius_sm,
+        text_size=sizes.text_md,
+        )
+
+title = """<h1 align="center"><a href="https://github.com/OpenGVLab/Ask-Anything"><img src="https://i.328888.xyz/2023/05/11/iqrAkZ.md.png" alt="Ask-Anything" border="0" style="margin: 0 auto; height: 100px;" /></a> </h1>"""
+description ="""
+        <p> VideoChat, an end-to-end chat-centric video understanding system powered by <a href='https://github.com/OpenGVLab/InternVideo'>InternVideo</a>. It integrates video foundation models and large language models via a learnable neural interface, excelling in spatiotemporal reasoning, event localization, and causal relationship inference.</p>
+        <div style='display:flex; gap: 0.25rem; '>
+        <a src="https://img.shields.io/badge/Github-Code-blue?logo=github" href="https://github.com/OpenGVLab/Ask-Anything"> <img src="https://img.shields.io/badge/Github-Code-blue?logo=github">
+        <a src="https://img.shields.io/badge/cs.CV-2305.06355-b31b1b?logo=arxiv&logoColor=red" href="https://arxiv.org/abs/2305.06355"> <img src="https://img.shields.io/badge/cs.CV-2305.06355-b31b1b?logo=arxiv&logoColor=red">
+        <a src="https://img.shields.io/badge/WeChat-Group-green?logo=wechat" href="https://pjlab-gvm-data.oss-cn-shanghai.aliyuncs.com/papers/media/wechat_group.jpg"> <img src="https://img.shields.io/badge/WeChat-Group-green?logo=wechat">
+        <a src="https://img.shields.io/discord/1099920215724277770?label=Discord&logo=discord" href="https://discord.gg/A2Ex6Pph6A"> <img src="https://img.shields.io/discord/1099920215724277770?label=Discord&logo=discord"> </div>
         """
-        Ask-Anything is a multifunctional video question answering tool that combines the functions of Action Recognition, Visual Captioning and ChatGPT. Our solution generates dense, descriptive captions for any object and action in a video, offering a range of language styles to suit different user preferences. It supports users to have conversations in different lengths, emotions, authenticity of language.<br>  
-        <p><a href='https://github.com/OpenGVLab/Ask-Anything'><img src='https://img.shields.io/badge/Github-Code-blue'></a></p><p>
-        """
-    )
-    
+
+
+with gr.Blocks(title="InternVideo-VideoChat!",theme=gvlabtheme,css="#chatbot {overflow:auto; height:500px;} #InputVideo {overflow:visible; height:320px;} footer {visibility: none}") as demo:
+    gr.Markdown(title)
+    gr.Markdown(description)
+
     with gr.Row():
-        with gr.Column():
-            input_video_path = gr.inputs.Video(label="Input Video")
-            input_tag = gr.Textbox(lines=1, label="User Prompt (Optional, Enter with commas)",visible=False)
-          
-            with gr.Row():
-                with gr.Column(sclae=0.3, min_width=0):
-                    caption = gr.Button("✍ Upload")
-                    chat_video = gr.Button(" 🎥 Let's Chat! ", interactive=False)
-                with gr.Column(scale=0.7, min_width=0):
-                    loadinglabel = gr.Label(label="State")
-        with gr.Column():
-            openai_api_key_textbox = gr.Textbox(
-                value=os.environ["OPENAI_API_KEY"],
-                placeholder="Paste your OpenAI API key here to start (sk-...)",
-                show_label=False,
-                lines=1,
+        with gr.Column(scale=0.5, visible=True) as video_upload:
+            with gr.Column(elem_id="image") as img_part:
+                with gr.Tab("Video", elem_id='video_tab'):
+                    up_video = gr.Video(interactive=True, include_audio=True, elem_id="video_upload")#.style(height=320)
+                with gr.Tab("Image", elem_id='image_tab'):
+                    up_image = gr.Image(type="pil", interactive=True, elem_id="image_upload")#.style(height=320)
+            upload_button = gr.Button(value="Upload & Start Chat", interactive=True, variant="primary")
+            
+            num_beams = gr.Slider(
+                minimum=1,
+                maximum=10,
+                value=1,
+                step=1,
+                interactive=True,
+                label="beam search numbers",
             )
-            chatbot = gr.Chatbot(elem_id="chatbot", label="gpt")
-            state = gr.State([])
-            user_tag_output = gr.State("")
-            image_caption_output = gr.State("")
-            video_caption_output  = gr.State("")
-            model_tag_output = gr.State("")
-            dense_caption_output = gr.State("")
-            with gr.Row(visible=False) as input_raws:
-                with gr.Column(scale=0.8):
-                    txt = gr.Textbox(show_label=False, placeholder="Enter text and press enter").style(container=False)
-                with gr.Column(scale=0.10, min_width=0):
-                    run = gr.Button("🏃‍♂️Run")
-                with gr.Column(scale=0.10, min_width=0):
-                    clear = gr.Button("🔄Clear️")    
-
-    with gr.Row():
-            example_videos = gr.Dataset(components=[input_video_path], samples=[['images/yoga.mp4'], ['images/making_cake.mp4'], ['images/playing_guitar.mp4']])
-
-    example_videos.click(fn=set_example_video, inputs=example_videos, outputs=example_videos.components)
-    caption.click(bot.memory.clear)
-    caption.click(lambda: gr.update(interactive = False), None, chat_video)
-    caption.click(lambda: [], None, chatbot)
-    caption.click(lambda: [], None, state)    
-    caption.click(inference,[input_video_path,input_tag],[model_tag_output, user_tag_output, image_caption_output, dense_caption_output,video_caption_output, chat_video, loadinglabel])
-
-    chat_video.click(bot.init_agent, [openai_api_key_textbox, image_caption_output, dense_caption_output, video_caption_output, model_tag_output, state], [input_raws,chatbot, state, openai_api_key_textbox])
-
-    txt.submit(bot.run_text, [txt, state], [chatbot, state])
-    txt.submit(lambda: "", None, txt)
-    run.click(bot.run_text, [txt, state], [chatbot, state])
-    run.click(lambda: "", None, txt)
-
-    clear.click(bot.memory.clear)
-    clear.click(lambda: [], None, chatbot)
-    clear.click(lambda: [], None, state)
+            
+            temperature = gr.Slider(
+                minimum=0.1,
+                maximum=2.0,
+                value=1.0,
+                step=0.1,
+                interactive=True,
+                label="Temperature",
+            )
+            
+            num_segments = gr.Slider(
+                minimum=8,
+                maximum=64,
+                value=8,
+                step=1,
+                interactive=True,
+                label="Video Segments",
+            )
+        
+        
+        with gr.Column(visible=True)  as input_raws:
+            chat_state = gr.State(EasyDict({
+                "system": "",
+                "roles": ("Human", "Assistant"),
+                "messages": [],
+                "sep": "###"
+            }))
+            img_list = gr.State()
+            chatbot = gr.Chatbot(elem_id="chatbot",label='VideoChat')
+            with gr.Row():
+                with gr.Column(scale=0.7):
+                    text_input = gr.Textbox(show_label=False, placeholder='Please upload your video first', interactive=False).style(container=False)
+                with gr.Column(scale=0.15, min_width=0):
+                    run = gr.Button("💭Send")
+                with gr.Column(scale=0.15, min_width=0):
+                    clear = gr.Button("🔄Clear️")     
     
+    chat = init_model()
+    upload_button.click(upload_img, [up_image, up_video, chat_state, num_segments], [up_image, up_video, text_input, upload_button, chat_state, img_list])
+    
+    text_input.submit(gradio_ask, [text_input, chatbot, chat_state], [text_input, chatbot, chat_state]).then(
+        gradio_answer, [up_image, up_video, chatbot, chat_state, img_list, num_beams, temperature], [chatbot, chat_state, img_list]
+    )
+    run.click(gradio_ask, [text_input, chatbot, chat_state], [text_input, chatbot, chat_state]).then(
+        gradio_answer, [up_image, up_video,chatbot, chat_state, img_list, num_beams, temperature], [chatbot, chat_state, img_list]
+    )
+    run.click(lambda: "", None, text_input)  
+    clear.click(gradio_reset, [chat_state, img_list], [chatbot, up_image, up_video, text_input, upload_button, chat_state, img_list], queue=False)
 
-
-demo.launch(server_name="0.0.0.0",enable_queue=True,)#share=True)
+demo.launch(server_name="0.0.0.0", favicon_path='bot_avatar.jpg', enable_queue=True,ssl_keyfile="vchat_cert/privkey1.pem",ssl_certfile="vchat_cert/cert1.pem",ssl_verify=False)
