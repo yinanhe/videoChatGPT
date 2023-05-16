@@ -1,3 +1,4 @@
+import os
 import torch
 import gradio as gr
 from gradio.themes.utils import colors, fonts, sizes
@@ -14,6 +15,8 @@ from models.videochat import VideoChat
 #             Model Initialization
 # ========================================
 def init_model():
+    os.system('wget -P /home/xlab-app-center/model/ https://storage.googleapis.com/sfr-vision-language-research/LAVIS/models/BLIP2/eva_vit_g.pth')
+    os.system('wget -P /home/xlab-app-center/model/ https://storage.googleapis.com/sfr-vision-language-research/LAVIS/models/BLIP2/blip2_pretrained_flant5xxl.pth')
     print('Initializing VideoChat')
     config_file = "configs/config.json"
     cfg = Config.from_file(config_file)
