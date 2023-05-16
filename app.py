@@ -204,4 +204,4 @@ with gr.Blocks(title="InternVideo-VideoChat!",theme=gvlabtheme,css="#chatbot {ov
     run.click(lambda: "", None, text_input)  
     clear.click(gradio_reset, [chat_state, img_list], [chatbot, up_image, up_video, text_input, upload_button, chat_state, img_list], queue=False)
 
-demo.launch(server_name="0.0.0.0", favicon_path='bot_avatar.jpg', enable_queue=True,ssl_keyfile="vchat_cert/privkey1.pem",ssl_certfile="vchat_cert/cert1.pem",ssl_verify=False)
+demo.launch(server_name="0.0.0.0", favicon_path='bot_avatar.jpg', enable_queue=True)
