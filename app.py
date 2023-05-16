@@ -1,4 +1,5 @@
 import os
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 import torch
 import gradio as gr
 from gradio.themes.utils import colors, fonts, sizes
