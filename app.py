@@ -16,7 +16,7 @@ from models.videochat import VideoChat
 #             Model Initialization
 # ========================================
 def init_model():
-    os.system('mkdir -p /home/xlab-app-center/model/ '
+    os.system('mkdir -p /home/xlab-app-center/model/ ')
     os.system('wget -P /home/xlab-app-center/model/ https://storage.googleapis.com/sfr-vision-language-research/LAVIS/models/BLIP2/eva_vit_g.pth')
     os.system('wget -P /home/xlab-app-center/model/ https://storage.googleapis.com/sfr-vision-language-research/LAVIS/models/BLIP2/blip2_pretrained_flant5xxl.pth')
     os.system('wget -P /home/xlab-app-center/model/ https://download.openxlab.org.cn/models/yinanhe/videochat_7b/weight//videochat_7b -O /home/xlab-app-center/model/videochat_7b.pth')
