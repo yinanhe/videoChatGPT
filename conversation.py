@@ -60,29 +60,30 @@ class Chat:
 
     def answer(self, conv,  img_list, max_new_tokens=200, num_beams=1, min_length=1, top_p=0.9,
                repetition_penalty=1.0, length_penalty=1, temperature=1.0):
-        conv.messages.append([conv.roles[1], None])
-        embs = self.get_context_emb(conv, img_list)
-        outputs = self.model.llama_model.generate(
-            inputs_embeds=embs,
-            max_new_tokens=max_new_tokens,
-            stopping_criteria=self.stopping_criteria,
-            num_beams=num_beams,
-            do_sample=True,
-            min_length=min_length,
-            top_p=top_p,
-            repetition_penalty=repetition_penalty,
-            length_penalty=length_penalty,
-            temperature=temperature,
-        )
-        output_token = outputs[0]
-        if output_token[0] == 0:  # the model might output a unknow token <unk> at the beginning. remove it
-                output_token = output_token[1:]
-        if output_token[0] == 1:  # some users find that there is a start token <s> at the beginning. remove it
-                output_token = output_token[1:]
-        output_text = self.model.llama_tokenizer.decode(output_token, add_special_tokens=False)
-        output_text = output_text.split('###')[0]  # remove the stop sign '###'
-        output_text = output_text.split('Assistant:')[-1].strip()
-        conv.messages[-1][1] = output_text
+        with torch.no_grad():
+            conv.messages.append([conv.roles[1], None])
+            embs = self.get_context_emb(conv, img_list)
+            outputs = self.model.llama_model.generate(
+                inputs_embeds=embs,
+                max_new_tokens=max_new_tokens,
+                stopping_criteria=self.stopping_criteria,
+                num_beams=num_beams,
+                do_sample=True,
+                min_length=min_length,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                length_penalty=length_penalty,
+                temperature=temperature,
+            )
+            output_token = outputs[0]
+            if output_token[0] == 0:  # the model might output a unknow token <unk> at the beginning. remove it
+                    output_token = output_token[1:]
+            if output_token[0] == 1:  # some users find that there is a start token <s> at the beginning. remove it
+                    output_token = output_token[1:]
+            output_text = self.model.llama_tokenizer.decode(output_token, add_special_tokens=False)
+            output_text = output_text.split('###')[0]  # remove the stop sign '###'
+            output_text = output_text.split('Assistant:')[-1].strip()
+            conv.messages[-1][1] = output_text
         return output_text, output_token.cpu().numpy(), conv
         
     def get_index(self, num_frames, num_segments):
@@ -140,8 +141,9 @@ class Chat:
         else:
             raise NotImplementedError
         print("Input video shape:", vid_chat.shape)
-        image_emb, _ = self.model.encode_img(image)
-        img_list.append(image_emb)
+        with torch.no_grad():
+            image_emb, _ = self.model.encode_img(image)
+            img_list.append(image_emb)
         conv.messages.append([
             conv.roles[0], 
             f"<Video><VideoHere></Video> {msg}\n"
@@ -163,8 +165,9 @@ class Chat:
         )
 
         img = transform(img).unsqueeze(0).unsqueeze(0).cuda()
-        image_emb, _ = self.model.encode_img(img)
-        img_list.append(image_emb)
+        with torch.no_grad():
+            image_emb, _ = self.model.encode_img(img)
+            img_list.append(image_emb)
         conv.messages.append([
             conv.roles[0],
             f"<Image><ImageHere></Image>\n"
